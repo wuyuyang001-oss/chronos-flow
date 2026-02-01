@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Chronos Flow</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body { -webkit-tap-highlight-color: transparent; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef } = React;
+        // 这里的图标组件从 Lucide 库中获取
+        const Icon = ({ name, size = 16, className = "", fill = "none" }) => {
+            const LucideIcon = lucide[name.charAt(0).toUpperCase() + name.slice(1)];
+            return LucideIcon ? <LucideIcon size={size} className={className} fill={fill} /> : null;
+        };
+
+        const ChronosFlow = () => {
+            const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+            const [currentTime, setCurrentTime] = useState(new Date());
+            const [tasks, setTasks] = useState([]); 
+            const [isAllExpanded, setIsAllExpanded] = useState(true);
+            const [expandedBlocks, setExpandedBlocks] = useState(new Set());
+            const [isInputExpanded, setIsInputExpanded] = useState(false);
+            const [inputName, setInputName] = useState('');
+            const [inputType, setInputType] = useState('work');
+            const [isPlanMode, setIsPlanMode] = useState(false);
+            const [planStart, setPlanStart] = useState("09:00");
+            const [planEnd, setPlanEnd] = useState("10:00");
+
+            const START_HOUR = 9;
+            const TOTAL_MINS = 16 * 60; 
+            const MIN_HEIGHT_PER_MIN = 3.5; 
+            const COLLAPSED_HEIGHT = 64;
+
+            useEffect(() => {
+                const saved = localStorage.getItem(`chronos_tasks_${selectedDate}`);
+                setTasks(saved ? JSON.parse(saved) : []);
+            }, [selectedDate]);
+
+            useEffect(() => {
+                localStorage.setItem(`chronos_tasks_${selectedDate}`, JSON.stringify(tasks));
+            }, [tasks, selectedDate]);
+
+            useEffect(() => {
+                const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+                return () => clearInterval(timer);
+            }, []);
+
+            const timeToMins = (t) => {
+                const [h, m] = t.split(':').map(Number);
+                let adjH = h < START_HOUR ? h + 24 : h;
+                return (adjH - START_HOUR) * 60 + m;
+            };
+
+            const minsToTimeStr = (m) => {
+                let h = Math.floor(m / 60) + START_HOUR;
+                let min = m % 60;
+                if (h >= 24) h -= 24;
+                return `${h.toString().padStart(2, '0')}:${min.toString().padStart(2, '0')}`;
+            };
+
+            const isToday = selectedDate === new Date().toISOString().split('T')[0];
+            const currentTotalMinutes = useMemo(() => {
+                if (!isToday) return -1;
+                let h = currentTime.getHours();
+                let m = currentTime.getMinutes();
+                if (h < START_HOUR) h += 24;
+                return (h - START_HOUR) * 60 + m;
+            }, [currentTime, isToday]);
+
+            const CATEGORIES = {
+                work: { label: '工作', bg: 'bg-blue-600', text: 'text-white', icon: 'Briefcase' },
+                study: { label: '学习', bg: 'bg-indigo-500', text: 'text-white', icon: 'BookOpen' },
+                play: { label: '娱乐', bg: 'bg-orange-500', text: 'text-white', icon: 'Gamepad2' },
+                fit: { label: '锻炼', bg: 'bg-emerald-500', text: 'text-white', icon: 'Trophy' },
+                other: { label: '其他', bg: 'bg-slate-600', text: 'text-white', icon: 'MoreHorizontal' }
+            };
+
+            const FIXED_CONFIG = [
+                { start: 0, end: 60, name: '晨间准备', type: 'fixed', icon: 'Coffee' },
+                { start: 180, end: 270, name: '午餐休息', type: 'fixed', icon: 'Utensils' },
+                { start: 540, end: 600, name: '晚餐时间', type: 'fixed', icon: 'Utensils' },
+                { start: 900, end: 960, name: '晚间休息', type: 'fixed', icon: 'Moon' },
+            ];
+
+            const { layoutBlocks, stats, totalHeight, freeMinutesLeft } = useMemo(() => {
+                let processedFixed = [...FIXED_CONFIG.map(f => ({ ...f, isFixed: true }))];
+                tasks.forEach(task => {
+                    let nextFixed = [];
+                    processedFixed.forEach(f => {
+                        if (task.end <= f.start || task.start >= f.end) { nextFixed.push(f); } 
+                        else {
+                            if (task.start > f.start) nextFixed.push({ ...f, end: task.start });
+                            if (task.end < f.end) nextFixed.push({ ...f, start: task.end });
+                        }
+                    });
+                    processedFixed = nextFixed;
+                });
+
+                let allEvents = [...processedFixed, ...tasks.map(t => ({ ...t, isFixed: false }))].sort((a, b) => a.start - b.start);
+                const blocks = [];
+                let lastEnd = 0;
+                let freeMins = 0;
+
+                allEvents.forEach((event) => {
+                    if (event.start > lastEnd) {
+                        if (lastEnd < currentTotalMinutes) blocks.push({ name: '碎片/浪费', type: 'waste', start: lastEnd, end: Math.min(event.start, currentTotalMinutes) });
+                        if (event.start > currentTotalMinutes) {
+                            freeMins += (event.start - Math.max(lastEnd, currentTotalMinutes));
+                            blocks.push({ type: 'empty', start: Math.max(lastEnd, currentTotalMinutes), end: event.start });
+                        }
+                    }
+                    blocks.push(event);
+                    lastEnd = Math.max(lastEnd, event.end);
+                });
+                if (lastEnd < TOTAL_MINS) {
+                    if (lastEnd < currentTotalMinutes) blocks.push({ name: '碎片/浪费', type: 'waste', start: lastEnd, end: currentTotalMinutes });
+                    freeMins += (TOTAL_MINS - Math.max(lastEnd, currentTotalMinutes));
+                    blocks.push({ type: 'empty', start: Math.max(lastEnd, currentTotalMinutes), end: TOTAL_MINS });
+                }
+
+                const categoryStats = { work: 0, study: 0, play: 0, fit: 0, other: 0, waste: 0 };
+                let currentTop = 0;
+                const finalLayout = blocks.filter(b => b.start < b.end).map(b => {
+                    const isCollapsed = isAllExpanded ? false : !expandedBlocks.has(b.start);
+                    const baseH = (b.type === 'empty') ? (b.end - b.start) * 1.5 : (isCollapsed ? COLLAPSED_HEIGHT : (b.end - b.start) * MIN_HEIGHT_PER_MIN);
+                    const res = { ...b, top: currentTop, height: baseH - 8, isCollapsed };
+                    currentTop += baseH;
+                    if (categoryStats[b.type] !== undefined) categoryStats[b.type] += (b.end - b.start);
+                    return res;
+                });
+
+                return { layoutBlocks: finalLayout, stats: categoryStats, totalHeight: currentTop, freeMinutesLeft: freeMins };
+            }, [tasks, isAllExpanded, expandedBlocks, currentTotalMinutes]);
+
+            const getTimeTop = (m) => {
+                const block = layoutBlocks.find(b => m >= b.start && m < b.end);
+                if (!block) return m >= TOTAL_MINS ? totalHeight : 0;
+                const ratio = (m - block.start) / (block.end - block.start);
+                return block.top + ratio * (block.height + 8);
+            };
+
+            const cursorTop = useMemo(() => getTimeTop(currentTotalMinutes), [layoutBlocks, currentTotalMinutes]);
+            const timeLeftInDay = Math.max(0, TOTAL_MINS - currentTotalMinutes);
+
+            return (
+                <div className="bg-slate-100 min-h-screen font-sans text-slate-900">
+                    <div className="max-w-md mx-auto bg-white min-h-screen shadow-2xl relative pb-20">
+                        {/* Header */}
+                        <div className="sticky top-0 z-[100] bg-slate-50/95 backdrop-blur-xl border-b border-slate-200 shadow-sm">
+                            <div className="flex justify-between items-center px-4 pt-3 pb-2">
+                                <span className="text-[13px] font-black text-blue-600 uppercase tracking-[0.2em]">Chronos Flow</span>
+                                <div className="flex items-center gap-1.5">
+                                    <button onClick={() => {const d = new Date(selectedDate); d.setDate(d.getDate()-1); setSelectedDate(d.toISOString().split('T')[0]);}} className="w-8 h-8 bg-white rounded-lg border border-slate-100 flex items-center justify-center"><Icon name="ChevronLeft" size={16}/></button>
+                                    <div className="px-2 font-black text-[14px]">{isToday ? '今天' : selectedDate.split('-').slice(1).join('/')}</div>
+                                    <button onClick={() => {const d = new Date(selectedDate); d.setDate(d.getDate()+1); setSelectedDate(d.toISOString().split('T')[0]);}} className="w-8 h-8 bg-white rounded-lg border border-slate-100 flex items-center justify-center"><Icon name="ChevronRight" size={16}/></button>
+                                    <button onClick={() => setIsAllExpanded(!isAllExpanded)} className="w-8 h-8 bg-white text-slate-400 rounded-lg border border-slate-100 flex items-center justify-center ml-0.5"><Icon name={isAllExpanded ? "Minimize2" : "Maximize2"} size={16}/></button>
+                                </div>
+                            </div>
+                            <div className="px-4 pb-3">
+                                <div className="bg-slate-900 rounded-xl px-3 py-2 flex items-center justify-between text-white shadow-lg">
+                                    <div className="flex items-center gap-2">
+                                        <div className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-pulse" />
+                                        <span className="text-[14px] font-mono font-black">{currentTime.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false})}</span>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                        <Icon name="Hourglass" size={10} className="text-slate-400" />
+                                        <span className="text-[11px] font-mono font-black text-blue-100">{Math.floor(timeLeftInDay/60)}h {timeLeftInDay%60}m</span>
+                                    </div>
+                                    <div className="bg-white/10 px-2 py-0.5 rounded-md flex items-center gap-1">
+                                        <Icon name="Zap" size={9} className="text-yellow-400" fill="currentColor" />
+                                        <span className="text-[10px] font-mono font-black">{Math.floor(freeMinutesLeft/60)}h</span>
+                                    </div>
+                                    <div className="bg-gradient-to-r from-blue-600 to-violet-600 px-2 py-0.5 rounded-full flex items-center gap-1.5 shadow-md">
+                                        <Icon name="Trophy" size={10} fill="currentColor" className="text-yellow-300" />
+                                        <span className="text-[10px] font-black">{tasks.length}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Timeline */}
+                        <div className="relative px-4 pt-6" style={{ height: `${totalHeight + 100}px` }}>
+                            <div className="absolute left-10 top-6 bottom-0 w-[2px] bg-slate-100" />
+                            <div className="ml-24 relative h-full z-10">
+                                {layoutBlocks.map((block, idx) => {
+                                    if (block.type === 'empty') return <div key={idx} className="absolute left-0 right-2 border border-dashed border-slate-200 rounded-2xl opacity-10" style={{ top: `${block.top}px`, height: `${block.height}px` }} />;
+                                    let isLive = isToday && currentTotalMinutes >= block.start && currentTotalMinutes < block.end;
+                                    let cat = CATEGORIES[block.type] || { bg: 'bg-white', text: 'text-rose-500', icon: 'AlertTriangle' };
+                                    return (
+                                        <div key={idx} className={`absolute left-0 right-2 rounded-[24px] border-l-[6px] flex flex-col justify-center px-4 border ${block.isFixed ? 'bg-slate-50 text-slate-400' : (block.type === 'waste' ? 'bg-white border-rose-100 text-rose-500' : `${cat.bg} text-white shadow-lg`)} ${isLive ? 'ring-4 ring-blue-500/10 z-20' : ''}`} style={{ top: `${block.top}px`, height: `${block.height}px` }}>
+                                            <div className="flex justify-between items-center">
+                                                <div className="flex items-center gap-3 overflow-hidden">
+                                                    <div className="bg-white/20 p-2 rounded-xl shrink-0"><Icon name={block.isFixed ? block.icon : cat.icon} size={16}/></div>
+                                                    <h3 className="text-[13px] font-black truncate">{block.name}</h3>
+                                                </div>
+                                                {!block.isFixed && block.type !== 'waste' && <button onClick={() => setTasks(tasks.filter(t => t.id !== block.id))} className="p-1.5 opacity-40"><Icon name="Trash2" size={14}/></button>}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        {/* Audit Module */}
+                        <div className="mt-10 px-4 pb-20">
+                            <div className="bg-slate-900 rounded-[32px] p-6 text-white shadow-2xl relative overflow-hidden">
+                                <div className="flex items-center gap-2 mb-6">
+                                    <Icon name="BarChart3" size={20} className="text-blue-400"/>
+                                    <h2 className="text-lg font-black tracking-tight">时间审计报告</h2>
+                                </div>
+                                <div className="grid grid-cols-2 gap-3 mb-8">
+                                    <div className="bg-white/5 rounded-2xl p-4 border border-white/10">
+                                        <p className="text-[9px] font-black uppercase tracking-wider opacity-40 mb-2">ROI (投资回报)</p>
+                                        <p className="text-2xl font-mono font-black text-blue-400">{Math.round(((stats.work + stats.study) / (TOTAL_MINS - freeMinutesLeft || 1)) * 100)}%</p>
+                                    </div>
+                                    <div className="bg-white/5 rounded-2xl p-4 border border-white/10">
+                                        <p className="text-[9px] font-black uppercase tracking-wider opacity-40 mb-2">效率评级</p>
+                                        <p className="text-sm font-black text-emerald-400">Class A - Focused</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Floating Button */}
+                    <div className="fixed bottom-6 right-6 z-[300]">
+                        <button onClick={() => setIsInputExpanded(true)} className="w-14 h-14 bg-blue-600 text-white rounded-full shadow-xl flex items-center justify-center border-2 border-white/20">
+                            <Icon name="Zap" size={24} fill="white" />
+                        </button>
+                    </div>
+
+                    {/* Input Modal */}
+                    {isInputExpanded && (
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[400] flex items-center justify-center p-4">
+                            <div className="bg-white w-full max-w-xs rounded-[32px] p-6 shadow-2xl relative">
+                                <button onClick={() => setIsInputExpanded(false)} className="absolute -top-2 -right-2 bg-white p-2 rounded-full shadow-md"><Icon name="X" size={16}/></button>
+                                <div className="flex bg-slate-100 p-1 rounded-xl mb-4">
+                                    <button onClick={() => setIsPlanMode(false)} className={`flex-1 py-1.5 rounded-lg text-[10px] font-black ${!isPlanMode ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400'}`}>立即开始</button>
+                                    <button onClick={() => setIsPlanMode(true)} className={`flex-1 py-1.5 rounded-lg text-[10px] font-black ${isPlanMode ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400'}`}>投资未来</button>
+                                </div>
+                                <input className="w-full bg-slate-50 rounded-xl p-3 text-sm font-bold mb-4 outline-none border border-slate-100" placeholder="做什么？" value={inputName} onChange={e => setInputName(e.target.value)} />
+                                <button onClick={() => {
+                                    if(!inputName) return;
+                                    let start = isPlanMode ? timeToMins(planStart) : currentTotalMinutes;
+                                    let end = start + 30;
+                                    setTasks([...tasks, { id: Date.now(), name: inputName, type: inputType, start, end }]);
+                                    setInputName(''); setIsInputExpanded(false);
+                                }} className="w-full bg-blue-600 text-white h-11 rounded-xl font-black text-xs">确认添加</button>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<ChronosFlow />);
+    </script>
+</body>
+</html>
